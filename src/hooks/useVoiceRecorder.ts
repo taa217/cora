@@ -6,6 +6,24 @@ interface UseVoiceRecorderOptions {
   silenceDuration?: number
 }
 
+// Helper to get the best supported MIME type for MediaRecorder
+const getSupportedMimeType = (): string => {
+  const types = [
+    'audio/webm;codecs=opus',
+    'audio/webm',
+    'audio/mp4',
+    'audio/ogg;codecs=opus',
+    'audio/wav',
+    '',  // Empty string = browser default
+  ]
+  for (const type of types) {
+    if (type === '' || MediaRecorder.isTypeSupported(type)) {
+      return type
+    }
+  }
+  return ''
+}
+
 const useVoiceRecorder = ({
   onSpeechEnd,
   silenceDuration = 1500,
@@ -25,6 +43,8 @@ const useVoiceRecorder = ({
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const finalTranscriptRef = useRef('')
+  const isRecordingRef = useRef(false)
+  const isPausedRef = useRef(false)
 
   const startRecording = useCallback(async () => {
     try {
@@ -36,10 +56,11 @@ const useVoiceRecorder = ({
       // Request microphone access
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
 
-      // Set up MediaRecorder
-      const mediaRecorder = new MediaRecorder(stream, {
-        mimeType: 'audio/webm;codecs=opus',
-      })
+      // Set up MediaRecorder with mobile-compatible MIME type
+      const mimeType = getSupportedMimeType()
+      const mediaRecorder = mimeType
+        ? new MediaRecorder(stream, { mimeType })
+        : new MediaRecorder(stream)
 
       audioChunksRef.current = []
 
@@ -118,8 +139,8 @@ const useVoiceRecorder = ({
         }
 
         recognition.onend = () => {
-          // Restart recognition if still recording
-          if (state.isRecording && !state.isPaused) {
+          // Restart recognition if still recording - use refs to avoid stale closure
+          if (isRecordingRef.current && !isPausedRef.current) {
             try {
               recognition.start()
             } catch (e) {
@@ -132,6 +153,8 @@ const useVoiceRecorder = ({
         recognition.start()
       }
 
+      isRecordingRef.current = true
+      isPausedRef.current = false
       setState((prev) => ({
         ...prev,
         isRecording: true,
@@ -164,6 +187,8 @@ const useVoiceRecorder = ({
       recognitionRef.current = null
     }
 
+    isRecordingRef.current = false
+    isPausedRef.current = false
     setState((prev) => ({
       ...prev,
       isRecording: false,
@@ -184,6 +209,7 @@ const useVoiceRecorder = ({
         recognitionRef.current.stop()
       }
 
+      isPausedRef.current = true
       setState((prev) => ({
         ...prev,
         isPaused: true,
@@ -250,17 +276,14 @@ const useVoiceRecorder = ({
         }
 
         recognition.onend = () => {
-          // Restart recognition if still recording and not paused
-          setState((current) => {
-            if (current.isRecording && !current.isPaused && recognitionRef.current) {
-              try {
-                recognitionRef.current.start()
-              } catch (e) {
-                // Ignore restart errors
-              }
+          // Restart recognition if still recording and not paused - use refs to avoid stale closure
+          if (isRecordingRef.current && !isPausedRef.current && recognitionRef.current) {
+            try {
+              recognitionRef.current.start()
+            } catch (e) {
+              // Ignore restart errors
             }
-            return current
-          })
+          }
         }
 
         recognitionRef.current = recognition
@@ -271,6 +294,7 @@ const useVoiceRecorder = ({
         }
       }
 
+      isPausedRef.current = false
       setState((prev) => ({
         ...prev,
         isPaused: false,
