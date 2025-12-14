@@ -3,9 +3,15 @@ interface SpeechRecognition extends EventTarget {
   continuous: boolean
   interimResults: boolean
   lang: string
+  maxAlternatives: number
   start(): void
   stop(): void
   abort(): void
+  onstart: (() => void) | null
+  onaudiostart: (() => void) | null
+  onaudioend: (() => void) | null
+  onspeechstart: (() => void) | null
+  onspeechend: (() => void) | null
   onresult: ((event: SpeechRecognitionEvent) => void) | null
   onerror: ((event: SpeechRecognitionErrorEvent) => void) | null
   onend: (() => void) | null
@@ -40,7 +46,7 @@ interface SpeechRecognitionErrorEvent extends Event {
 }
 
 interface SpeechRecognitionConstructor {
-  new (): SpeechRecognition
+  new(): SpeechRecognition
 }
 
 declare var SpeechRecognition: SpeechRecognitionConstructor

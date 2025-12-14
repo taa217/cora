@@ -89,20 +89,49 @@ const useVoiceRecorder = ({
       mediaRecorderRef.current = mediaRecorder
       mediaRecorder.start()
 
+      // Set refs BEFORE starting recognition to prevent race conditions
+      isRecordingRef.current = true
+      isPausedRef.current = false
+
       // Set up Speech Recognition if available
       if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
         const SpeechRecognition =
           window.SpeechRecognition || window.webkitSpeechRecognition
         const recognition = new SpeechRecognition()
 
+        // Mobile Chrome often ignores continuous mode, so we handle restarts manually
         recognition.continuous = true
         recognition.interimResults = true
         recognition.lang = 'en-US'
+        // Increase maxAlternatives for better accuracy on mobile
+        recognition.maxAlternatives = 1
 
         // Reset final transcript ref on start
         finalTranscriptRef.current = ''
 
+        recognition.onstart = () => {
+          console.log('[SpeechRecognition] Started')
+        }
+
+        recognition.onaudiostart = () => {
+          console.log('[SpeechRecognition] Audio capture started')
+        }
+
+        recognition.onaudioend = () => {
+          console.log('[SpeechRecognition] Audio capture ended')
+        }
+
+        recognition.onspeechstart = () => {
+          console.log('[SpeechRecognition] Speech detected')
+        }
+
+        recognition.onspeechend = () => {
+          console.log('[SpeechRecognition] Speech ended')
+        }
+
         recognition.onresult = (event) => {
+          console.log('[SpeechRecognition] Got result:', event.results.length, 'results')
+
           if (silenceTimerRef.current) {
             clearTimeout(silenceTimerRef.current)
             silenceTimerRef.current = null
@@ -134,27 +163,45 @@ const useVoiceRecorder = ({
         }
 
         recognition.onerror = (event) => {
-          console.error('Speech recognition error:', event.error)
-          // Don't throw error for recognition failures, just log
+          console.error('[SpeechRecognition] Error:', event.error, event.message)
+          // On mobile, "no-speech" error is common - just restart
+          if (event.error === 'no-speech' || event.error === 'audio-capture' || event.error === 'network') {
+            // These are recoverable errors, recognition will end and we'll restart
+            console.log('[SpeechRecognition] Recoverable error, will restart on onend')
+          }
         }
 
         recognition.onend = () => {
+          console.log('[SpeechRecognition] Ended. isRecording:', isRecordingRef.current, 'isPaused:', isPausedRef.current)
+
           // Restart recognition if still recording - use refs to avoid stale closure
           if (isRecordingRef.current && !isPausedRef.current) {
-            try {
-              recognition.start()
-            } catch (e) {
-              // Ignore restart errors
-            }
+            // Add a small delay before restarting on mobile to prevent rapid-fire restarts
+            setTimeout(() => {
+              if (isRecordingRef.current && !isPausedRef.current) {
+                try {
+                  console.log('[SpeechRecognition] Attempting restart...')
+                  recognition.start()
+                } catch (e) {
+                  console.error('[SpeechRecognition] Restart failed:', e)
+                }
+              }
+            }, 100)
           }
         }
 
         recognitionRef.current = recognition
-        recognition.start()
+
+        try {
+          recognition.start()
+          console.log('[SpeechRecognition] Initial start called')
+        } catch (e) {
+          console.error('[SpeechRecognition] Initial start failed:', e)
+        }
+      } else {
+        console.warn('[SpeechRecognition] Not supported in this browser')
       }
 
-      isRecordingRef.current = true
-      isPausedRef.current = false
       setState((prev) => ({
         ...prev,
         isRecording: true,
@@ -162,6 +209,7 @@ const useVoiceRecorder = ({
         error: null,
       }))
     } catch (error) {
+      console.error('[Recording] Failed to start:', error)
       const errorMessage =
         error instanceof Error ? error.message : 'Failed to start recording'
       setState((prev) => ({
@@ -170,7 +218,7 @@ const useVoiceRecorder = ({
         isRecording: false,
       }))
     }
-  }, [state.isRecording, state.isPaused, onSpeechEnd, silenceDuration])
+  }, [onSpeechEnd, silenceDuration])
 
   const stopRecording = useCallback(() => {
     if (silenceTimerRef.current) {
