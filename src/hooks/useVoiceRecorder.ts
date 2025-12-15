@@ -22,7 +22,12 @@ const useVoiceRecorder = ({
   const recognitionRef = useRef<SpeechRecognition | null>(null)
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const finalTranscriptRef = useRef('')
+
+  // Stores text from previous recognition sessions (before restarts)
+  const committedTranscriptRef = useRef('')
+  // Stores text from the current recognition session
+  const sessionTranscriptRef = useRef('')
+
   const isRecordingRef = useRef(false)
   const isPausedRef = useRef(false)
 
@@ -36,7 +41,8 @@ const useVoiceRecorder = ({
       // Set refs BEFORE starting recognition to prevent race conditions
       isRecordingRef.current = true
       isPausedRef.current = false
-      finalTranscriptRef.current = ''
+      committedTranscriptRef.current = ''
+      sessionTranscriptRef.current = ''
 
       // Set up Speech Recognition
       const SpeechRecognition =
@@ -71,29 +77,35 @@ const useVoiceRecorder = ({
       }
 
       recognition.onresult = (event) => {
-        console.log('[SpeechRecognition] Got result:', event.results.length, 'results')
-
         if (silenceTimerRef.current) {
           clearTimeout(silenceTimerRef.current)
           silenceTimerRef.current = null
         }
 
-        let interimTranscript = ''
+        // Rebuild the transcript for the CURRENT session from scratch
+        // This avoids duplication issues where Android sends repeated final results
+        let newSessionTranscript = ''
         let hasFinal = false
 
-        for (let i = event.resultIndex; i < event.results.length; i++) {
-          const transcript = event.results[i][0].transcript
-          if (event.results[i].isFinal) {
-            finalTranscriptRef.current += transcript + ' '
+        for (let i = 0; i < event.results.length; i++) {
+          const result = event.results[i]
+          const transcript = result[0].transcript
+          newSessionTranscript += transcript
+
+          if (result.isFinal) {
             hasFinal = true
-          } else {
-            interimTranscript += transcript
+            // Add a space after final results if not present
+            if (!newSessionTranscript.endsWith(' ')) {
+              newSessionTranscript += ' '
+            }
           }
         }
 
+        sessionTranscriptRef.current = newSessionTranscript
+
         setState((prev) => ({
           ...prev,
-          transcript: finalTranscriptRef.current + interimTranscript,
+          transcript: committedTranscriptRef.current + sessionTranscriptRef.current,
         }))
 
         if (hasFinal && onSpeechEnd) {
@@ -114,6 +126,12 @@ const useVoiceRecorder = ({
 
       recognition.onend = () => {
         console.log('[SpeechRecognition] Ended. isRecording:', isRecordingRef.current, 'isPaused:', isPausedRef.current)
+
+        // Commit the session transcript to the permanent store
+        if (sessionTranscriptRef.current) {
+          committedTranscriptRef.current += sessionTranscriptRef.current
+          sessionTranscriptRef.current = ''
+        }
 
         // Restart recognition if still recording - use refs to avoid stale closure
         if (isRecordingRef.current && !isPausedRef.current) {
@@ -225,22 +243,28 @@ const useVoiceRecorder = ({
             silenceTimerRef.current = null
           }
 
-          let interimTranscript = ''
+          // Rebuild the transcript for the CURRENT session from scratch
+          let newSessionTranscript = ''
           let hasFinal = false
 
-          for (let i = event.resultIndex; i < event.results.length; i++) {
-            const transcript = event.results[i][0].transcript
-            if (event.results[i].isFinal) {
-              finalTranscriptRef.current += transcript + ' '
+          for (let i = 0; i < event.results.length; i++) {
+            const result = event.results[i]
+            const transcript = result[0].transcript
+            newSessionTranscript += transcript
+
+            if (result.isFinal) {
               hasFinal = true
-            } else {
-              interimTranscript += transcript
+              if (!newSessionTranscript.endsWith(' ')) {
+                newSessionTranscript += ' '
+              }
             }
           }
 
+          sessionTranscriptRef.current = newSessionTranscript
+
           setState((prev) => ({
             ...prev,
-            transcript: finalTranscriptRef.current + interimTranscript,
+            transcript: committedTranscriptRef.current + sessionTranscriptRef.current,
           }))
 
           if (hasFinal && onSpeechEnd) {
@@ -255,6 +279,12 @@ const useVoiceRecorder = ({
         }
 
         recognition.onend = () => {
+          // Commit the session transcript to the permanent store
+          if (sessionTranscriptRef.current) {
+            committedTranscriptRef.current += sessionTranscriptRef.current
+            sessionTranscriptRef.current = ''
+          }
+
           // Restart recognition if still recording and not paused - use refs to avoid stale closure
           if (isRecordingRef.current && !isPausedRef.current && recognitionRef.current) {
             try {
@@ -291,7 +321,8 @@ const useVoiceRecorder = ({
       URL.revokeObjectURL(state.audioUrl)
     }
 
-    finalTranscriptRef.current = ''
+    committedTranscriptRef.current = ''
+    sessionTranscriptRef.current = ''
 
     setState({
       isRecording: false,
@@ -304,7 +335,8 @@ const useVoiceRecorder = ({
   }, [state.audioUrl])
 
   const resetTranscript = useCallback(() => {
-    finalTranscriptRef.current = ''
+    committedTranscriptRef.current = ''
+    sessionTranscriptRef.current = ''
     setState((prev) => ({
       ...prev,
       transcript: '',
