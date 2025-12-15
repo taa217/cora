@@ -6,24 +6,6 @@ interface UseVoiceRecorderOptions {
   silenceDuration?: number
 }
 
-// Helper to get the best supported MIME type for MediaRecorder
-const getSupportedMimeType = (): string => {
-  const types = [
-    'audio/webm;codecs=opus',
-    'audio/webm',
-    'audio/mp4',
-    'audio/ogg;codecs=opus',
-    'audio/wav',
-    '',  // Empty string = browser default
-  ]
-  for (const type of types) {
-    if (type === '' || MediaRecorder.isTypeSupported(type)) {
-      return type
-    }
-  }
-  return ''
-}
-
 const useVoiceRecorder = ({
   onSpeechEnd,
   silenceDuration = 1500,
@@ -37,8 +19,6 @@ const useVoiceRecorder = ({
     error: null,
   })
 
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null)
-  const audioChunksRef = useRef<Blob[]>([])
   const recognitionRef = useRef<SpeechRecognition | null>(null)
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -49,157 +29,116 @@ const useVoiceRecorder = ({
   const startRecording = useCallback(async () => {
     try {
       // Check for browser support
-      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-        throw new Error('Your browser does not support audio recording')
+      if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
+        throw new Error('Your browser does not support speech recognition')
       }
-
-      // Request microphone access
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-
-      // Set up MediaRecorder with mobile-compatible MIME type
-      const mimeType = getSupportedMimeType()
-      const mediaRecorder = mimeType
-        ? new MediaRecorder(stream, { mimeType })
-        : new MediaRecorder(stream)
-
-      audioChunksRef.current = []
-
-      mediaRecorder.ondataavailable = (event) => {
-        if (event.data.size > 0) {
-          audioChunksRef.current.push(event.data)
-        }
-      }
-
-      mediaRecorder.onstop = () => {
-        const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' })
-        const audioUrl = URL.createObjectURL(audioBlob)
-
-        setState((prev) => ({
-          ...prev,
-          audioBlob,
-          audioUrl,
-          isRecording: false,
-          isPaused: false,
-        }))
-
-        // Stop all tracks to release microphone
-        stream.getTracks().forEach((track) => track.stop())
-      }
-
-      mediaRecorderRef.current = mediaRecorder
-      mediaRecorder.start()
 
       // Set refs BEFORE starting recognition to prevent race conditions
       isRecordingRef.current = true
       isPausedRef.current = false
+      finalTranscriptRef.current = ''
 
-      // Set up Speech Recognition if available
-      if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
-        const SpeechRecognition =
-          window.SpeechRecognition || window.webkitSpeechRecognition
-        const recognition = new SpeechRecognition()
+      // Set up Speech Recognition
+      const SpeechRecognition =
+        window.SpeechRecognition || window.webkitSpeechRecognition
+      const recognition = new SpeechRecognition()
 
-        // Mobile Chrome often ignores continuous mode, so we handle restarts manually
-        recognition.continuous = true
-        recognition.interimResults = true
-        recognition.lang = 'en-US'
-        // Increase maxAlternatives for better accuracy on mobile
-        recognition.maxAlternatives = 1
+      // Mobile Chrome often ignores continuous mode, so we handle restarts manually
+      recognition.continuous = true
+      recognition.interimResults = true
+      recognition.lang = 'en-US'
+      // Increase maxAlternatives for better accuracy on mobile
+      recognition.maxAlternatives = 1
 
-        // Reset final transcript ref on start
-        finalTranscriptRef.current = ''
+      recognition.onstart = () => {
+        console.log('[SpeechRecognition] Started')
+      }
 
-        recognition.onstart = () => {
-          console.log('[SpeechRecognition] Started')
+      recognition.onaudiostart = () => {
+        console.log('[SpeechRecognition] Audio capture started')
+      }
+
+      recognition.onaudioend = () => {
+        console.log('[SpeechRecognition] Audio capture ended')
+      }
+
+      recognition.onspeechstart = () => {
+        console.log('[SpeechRecognition] Speech detected')
+      }
+
+      recognition.onspeechend = () => {
+        console.log('[SpeechRecognition] Speech ended')
+      }
+
+      recognition.onresult = (event) => {
+        console.log('[SpeechRecognition] Got result:', event.results.length, 'results')
+
+        if (silenceTimerRef.current) {
+          clearTimeout(silenceTimerRef.current)
+          silenceTimerRef.current = null
         }
 
-        recognition.onaudiostart = () => {
-          console.log('[SpeechRecognition] Audio capture started')
-        }
+        let interimTranscript = ''
+        let hasFinal = false
 
-        recognition.onaudioend = () => {
-          console.log('[SpeechRecognition] Audio capture ended')
-        }
-
-        recognition.onspeechstart = () => {
-          console.log('[SpeechRecognition] Speech detected')
-        }
-
-        recognition.onspeechend = () => {
-          console.log('[SpeechRecognition] Speech ended')
-        }
-
-        recognition.onresult = (event) => {
-          console.log('[SpeechRecognition] Got result:', event.results.length, 'results')
-
-          if (silenceTimerRef.current) {
-            clearTimeout(silenceTimerRef.current)
-            silenceTimerRef.current = null
-          }
-
-          let interimTranscript = ''
-          let hasFinal = false
-
-          for (let i = event.resultIndex; i < event.results.length; i++) {
-            const transcript = event.results[i][0].transcript
-            if (event.results[i].isFinal) {
-              finalTranscriptRef.current += transcript + ' '
-              hasFinal = true
-            } else {
-              interimTranscript += transcript
-            }
-          }
-
-          setState((prev) => ({
-            ...prev,
-            transcript: finalTranscriptRef.current + interimTranscript,
-          }))
-
-          if (hasFinal && onSpeechEnd) {
-            silenceTimerRef.current = setTimeout(() => {
-              onSpeechEnd()
-            }, silenceDuration)
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+          const transcript = event.results[i][0].transcript
+          if (event.results[i].isFinal) {
+            finalTranscriptRef.current += transcript + ' '
+            hasFinal = true
+          } else {
+            interimTranscript += transcript
           }
         }
 
-        recognition.onerror = (event) => {
-          console.error('[SpeechRecognition] Error:', event.error, event.message)
-          // On mobile, "no-speech" error is common - just restart
-          if (event.error === 'no-speech' || event.error === 'audio-capture' || event.error === 'network') {
-            // These are recoverable errors, recognition will end and we'll restart
-            console.log('[SpeechRecognition] Recoverable error, will restart on onend')
-          }
+        setState((prev) => ({
+          ...prev,
+          transcript: finalTranscriptRef.current + interimTranscript,
+        }))
+
+        if (hasFinal && onSpeechEnd) {
+          silenceTimerRef.current = setTimeout(() => {
+            onSpeechEnd()
+          }, silenceDuration)
         }
+      }
 
-        recognition.onend = () => {
-          console.log('[SpeechRecognition] Ended. isRecording:', isRecordingRef.current, 'isPaused:', isPausedRef.current)
+      recognition.onerror = (event) => {
+        console.error('[SpeechRecognition] Error:', event.error, event.message)
+        // On mobile, "no-speech" error is common - just restart
+        if (event.error === 'no-speech' || event.error === 'audio-capture' || event.error === 'network') {
+          // These are recoverable errors, recognition will end and we'll restart
+          console.log('[SpeechRecognition] Recoverable error, will restart on onend')
+        }
+      }
 
-          // Restart recognition if still recording - use refs to avoid stale closure
-          if (isRecordingRef.current && !isPausedRef.current) {
-            // Add a small delay before restarting on mobile to prevent rapid-fire restarts
-            setTimeout(() => {
-              if (isRecordingRef.current && !isPausedRef.current) {
-                try {
-                  console.log('[SpeechRecognition] Attempting restart...')
-                  recognition.start()
-                } catch (e) {
-                  console.error('[SpeechRecognition] Restart failed:', e)
-                }
+      recognition.onend = () => {
+        console.log('[SpeechRecognition] Ended. isRecording:', isRecordingRef.current, 'isPaused:', isPausedRef.current)
+
+        // Restart recognition if still recording - use refs to avoid stale closure
+        if (isRecordingRef.current && !isPausedRef.current) {
+          // Add a small delay before restarting on mobile to prevent rapid-fire restarts
+          setTimeout(() => {
+            if (isRecordingRef.current && !isPausedRef.current) {
+              try {
+                console.log('[SpeechRecognition] Attempting restart...')
+                recognition.start()
+              } catch (e) {
+                console.error('[SpeechRecognition] Restart failed:', e)
               }
-            }, 100)
-          }
+            }
+          }, 100)
         }
+      }
 
-        recognitionRef.current = recognition
+      recognitionRef.current = recognition
 
-        try {
-          recognition.start()
-          console.log('[SpeechRecognition] Initial start called')
-        } catch (e) {
-          console.error('[SpeechRecognition] Initial start failed:', e)
-        }
-      } else {
-        console.warn('[SpeechRecognition] Not supported in this browser')
+      try {
+        recognition.start()
+        console.log('[SpeechRecognition] Initial start called')
+      } catch (e) {
+        console.error('[SpeechRecognition] Initial start failed:', e)
+        throw e
       }
 
       setState((prev) => ({
@@ -226,10 +165,6 @@ const useVoiceRecorder = ({
       silenceTimerRef.current = null
     }
 
-    if (mediaRecorderRef.current && state.isRecording) {
-      mediaRecorderRef.current.stop()
-    }
-
     if (recognitionRef.current) {
       recognitionRef.current.stop()
       recognitionRef.current = null
@@ -242,7 +177,7 @@ const useVoiceRecorder = ({
       isRecording: false,
       isPaused: false,
     }))
-  }, [state.isRecording])
+  }, [])
 
   const pauseRecording = useCallback(() => {
     if (silenceTimerRef.current) {
@@ -250,9 +185,7 @@ const useVoiceRecorder = ({
       silenceTimerRef.current = null
     }
 
-    if (mediaRecorderRef.current && state.isRecording && !state.isPaused) {
-      mediaRecorderRef.current.pause()
-
+    if (state.isRecording && !state.isPaused) {
       if (recognitionRef.current) {
         recognitionRef.current.stop()
       }
@@ -266,9 +199,7 @@ const useVoiceRecorder = ({
   }, [state.isRecording, state.isPaused])
 
   const resumeRecording = useCallback(() => {
-    if (mediaRecorderRef.current && state.isPaused) {
-      mediaRecorderRef.current.resume()
-
+    if (state.isPaused) {
       // Recreate speech recognition if it was stopped
       if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
         // Stop any existing recognition first
@@ -378,8 +309,6 @@ const useVoiceRecorder = ({
       ...prev,
       transcript: '',
     }))
-    // Note: We don't restart recognition here, we just clear our accumulated text.
-    // New results will come in with new resultIndex.
   }, [])
 
   const playAudio = useCallback(() => {
@@ -405,6 +334,9 @@ const useVoiceRecorder = ({
     return () => {
       if (silenceTimerRef.current) {
         clearTimeout(silenceTimerRef.current)
+      }
+      if (recognitionRef.current) {
+        recognitionRef.current.stop()
       }
     }
   }, [])
