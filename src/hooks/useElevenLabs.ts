@@ -59,6 +59,7 @@ export const useElevenLabs = ({
 
             await conversation.startSession({
                 agentId: agentId,
+                connectionType: 'webrtc', // explicit connection type required
             })
         } catch (error) {
             console.error('[ElevenLabs] Failed to start:', error)
