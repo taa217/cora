@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useState } from 'react'
 import RecordingButton from './RecordingButton'
 import ErrorMessage from './ErrorMessage'
-import useVoiceAssistant from '../../hooks/useVoiceAssistant'
+import useVoiceAssistant, { VoiceProvider } from '../../hooks/useVoiceAssistant'
 import CoraWave, { CoraWaveState } from '../CoraWave'
 import CoraLogo from '../CoraLogo'
 
 const VoiceRecorder = () => {
+  const [provider, setProvider] = useState<VoiceProvider>('elevenlabs')
   const {
     recorder,
     messages,
@@ -13,7 +14,7 @@ const VoiceRecorder = () => {
     connectionError,
     resetConversation,
     isAssistantSpeaking,
-  } = useVoiceAssistant()
+  } = useVoiceAssistant(provider)
 
   const {
     state,
@@ -65,12 +66,20 @@ const VoiceRecorder = () => {
       <div className="relative space-y-8">
         <div className="flex items-center justify-between gap-4">
           <CoraLogo />
-          <button
-            onClick={resetConversation}
-            className="text-xs uppercase tracking-[0.4em] text-brand-ivory/60 hover:text-brand-ivory transition"
-          >
-            Reset
-          </button>
+          <div className="flex items-center gap-4">
+            <button
+              onClick={() => setProvider(p => p === 'openai' ? 'elevenlabs' : 'openai')}
+              className="text-xs uppercase tracking-[0.2em] text-brand-ivory/60 hover:text-brand-ivory transition border border-brand-ivory/20 rounded-full px-3 py-1"
+            >
+              {provider === 'elevenlabs' ? 'ElevenLabs' : 'OpenAI'}
+            </button>
+            <button
+              onClick={resetConversation}
+              className="text-xs uppercase tracking-[0.4em] text-brand-ivory/60 hover:text-brand-ivory transition"
+            >
+              Reset
+            </button>
+          </div>
         </div>
 
         {(state.error || connectionError) && (
@@ -118,8 +127,8 @@ const VoiceRecorder = () => {
           {/* Transcript content - fades in/out smoothly */}
           <div
             className={`transform transition-all duration-500 ease-out ${showTranscript
-                ? 'opacity-100 translate-y-0'
-                : 'opacity-0 -translate-y-2 pointer-events-none'
+              ? 'opacity-100 translate-y-0'
+              : 'opacity-0 -translate-y-2 pointer-events-none'
               }`}
           >
             {recentMessages.map((message, index) => {

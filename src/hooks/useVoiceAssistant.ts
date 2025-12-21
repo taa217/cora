@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import useVoiceRecorder from './useVoiceRecorder'
+import { useElevenLabs } from './useElevenLabs'
 import { ChatCompletionMessageParam, ChatMessage } from '../types/voice'
 import { streamOpenAIResponse, synthesizeSpeechOpenAI } from '../lib/openai'
 import { speakText, stopSpeaking } from '../utils/speech'
 import { AudioQueue, extractCompleteSentences } from '../utils/audioQueue'
+
+export type VoiceProvider = 'openai' | 'elevenlabs'
 
 const SYSTEM_PROMPT =
   "You are Cora, a friendly and concise real-time voice companion. Keep answers under three sentences, use a warm and proactive tone, and finish with a brief, helpful suggestion for next steps whenever it makes sense."
@@ -21,21 +24,26 @@ const initialAssistantMessage: ChatMessage = {
   timestamp: Date.now(),
 }
 
-const useVoiceAssistant = () => {
+const useVoiceAssistant = (provider: VoiceProvider = 'elevenlabs') => {
+  // --- Common State ---
+  const [messages, setMessages] = useState<ChatMessage[]>([initialAssistantMessage])
+  const [connectionError, setConnectionError] = useState<string | null>(null)
+
+  // --- OpenAI Implementation ---
   // Ref to store the sendTranscript function to avoid circular dependency
   const sendTranscriptRef = useRef<() => Promise<void>>(async () => { })
   // Ref to store resumeRecording to avoid stale closure in AudioQueue callback
   const resumeRecordingRef = useRef<() => void>(() => { })
 
   const handleSpeechEnd = useCallback(() => {
-    sendTranscriptRef.current()
-  }, [])
+    if (provider === 'openai') {
+      sendTranscriptRef.current()
+    }
+  }, [provider])
 
-  const recorder = useVoiceRecorder({ onSpeechEnd: handleSpeechEnd })
-  const [messages, setMessages] = useState<ChatMessage[]>([initialAssistantMessage])
-  const [isStreaming, setIsStreaming] = useState(false)
-  const [connectionError, setConnectionError] = useState<string | null>(null)
-  const [isAssistantSpeaking, setIsAssistantSpeaking] = useState(false)
+  const openAIRecorder = useVoiceRecorder({ onSpeechEnd: handleSpeechEnd })
+  const [isOpenAIStreaming, setIsOpenAIStreaming] = useState(false)
+  const [isOpenAIAssistantSpeaking, setIsOpenAIAssistantSpeaking] = useState(false)
 
   const controllerRef = useRef<AbortController | null>(null)
   const latestMessagesRef = useRef<ChatMessage[]>(messages)
@@ -43,15 +51,27 @@ const useVoiceAssistant = () => {
   const audioUrlRegistryRef = useRef<string[]>([])
   const audioQueueRef = useRef<AudioQueue | null>(null)
 
+  // --- ElevenLabs Implementation ---
+  const elevenLabs = useElevenLabs({
+    onMessage: (message) => {
+      setMessages((prev) => [...prev, message])
+    },
+    onError: (error) => {
+      setConnectionError(error)
+    },
+  })
+
+  // --- Sync Refs ---
   // Keep resumeRecordingRef in sync with recorder.resumeRecording
   useEffect(() => {
-    resumeRecordingRef.current = recorder.resumeRecording
-  }, [recorder.resumeRecording])
+    resumeRecordingRef.current = openAIRecorder.resumeRecording
+  }, [openAIRecorder.resumeRecording])
 
   useEffect(() => {
     latestMessagesRef.current = messages
   }, [messages])
 
+  // --- OpenAI Logic ---
   const cleanupAssistantAudio = useCallback(() => {
     assistantAudioRef.current?.pause()
     assistantAudioRef.current = null
@@ -60,7 +80,7 @@ const useVoiceAssistant = () => {
     audioQueueRef.current?.dispose()
     audioQueueRef.current = null
     stopSpeaking()
-    setIsAssistantSpeaking(false)
+    setIsOpenAIAssistantSpeaking(false)
   }, [])
 
   useEffect(() => {
@@ -77,12 +97,12 @@ const useVoiceAssistant = () => {
     const settle = () => {
       // Add a small delay before cutting off to ensure the last word finishes
       setTimeout(() => {
-        setIsAssistantSpeaking(false)
+        setIsOpenAIAssistantSpeaking(false)
         // Resume recording after assistant finishes speaking
-        recorder.resumeRecording()
+        openAIRecorder.resumeRecording()
       }, 500)
     }
-    audio.onplay = () => setIsAssistantSpeaking(true)
+    audio.onplay = () => setIsOpenAIAssistantSpeaking(true)
     audio.onended = settle
     audio.onpause = settle
     audio.onerror = settle
@@ -91,19 +111,24 @@ const useVoiceAssistant = () => {
       settle()
       console.warn('Failed to play assistant audio', error)
     })
-  }, [recorder])
+  }, [openAIRecorder])
 
   const resetConversation = useCallback(() => {
     setMessages([initialAssistantMessage])
     latestMessagesRef.current = [initialAssistantMessage]
     setConnectionError(null)
-    recorder.clearRecording()
-    cleanupAssistantAudio()
-  }, [recorder, cleanupAssistantAudio])
+
+    if (provider === 'openai') {
+      openAIRecorder.clearRecording()
+      cleanupAssistantAudio()
+    } else {
+      elevenLabs.stop()
+    }
+  }, [provider, openAIRecorder, cleanupAssistantAudio, elevenLabs])
 
   const sendTranscript = useCallback(async () => {
-    const transcript = recorder.state.transcript.trim()
-    if (!transcript || isStreaming) {
+    const transcript = openAIRecorder.state.transcript.trim()
+    if (!transcript || isOpenAIStreaming) {
       return
     }
 
@@ -119,11 +144,11 @@ const useVoiceAssistant = () => {
     setConnectionError(null)
 
     // Pause recording while processing and speaking
-    recorder.pauseRecording()
-    recorder.resetTranscript()
+    openAIRecorder.pauseRecording()
+    openAIRecorder.resetTranscript()
 
     stopSpeaking()
-    setIsAssistantSpeaking(false)
+    setIsOpenAIAssistantSpeaking(false)
 
     controllerRef.current?.abort()
     const controller = new AbortController()
@@ -143,11 +168,12 @@ const useVoiceAssistant = () => {
       content: '',
       timestamp: Date.now(),
       isStreaming: true,
+      isError: false,
     }
 
     setMessages((prev) => [...prev, placeholder])
     latestMessagesRef.current = [...latestMessagesRef.current, placeholder]
-    setIsStreaming(true)
+    setIsOpenAIStreaming(true)
 
     let aggregated = ''
     let sentenceBuffer = ''
@@ -156,10 +182,9 @@ const useVoiceAssistant = () => {
 
     // Create audio queue for this response
     const audioQueue = new AudioQueue({
-      onPlayStart: () => setIsAssistantSpeaking(true),
+      onPlayStart: () => setIsOpenAIAssistantSpeaking(true),
       onPlayEnd: () => {
-        setIsAssistantSpeaking(false)
-        // Resume recording after all audio finishes - use ref to get latest function
+        setIsOpenAIAssistantSpeaking(false)
         setTimeout(() => resumeRecordingRef.current(), 300)
       },
       onError: (error) => console.warn('Audio queue error:', error),
@@ -222,17 +247,17 @@ const useVoiceAssistant = () => {
       if (ttsHasFailed && audioQueue.idle) {
         const utterance = speakText(finalText)
         if (utterance) {
-          setIsAssistantSpeaking(true)
+          setIsOpenAIAssistantSpeaking(true)
           utterance.onend = () => {
-            setIsAssistantSpeaking(false)
-            recorder.resumeRecording()
+            setIsOpenAIAssistantSpeaking(false)
+            openAIRecorder.resumeRecording()
           }
           utterance.onerror = () => {
-            setIsAssistantSpeaking(false)
-            recorder.resumeRecording()
+            setIsOpenAIAssistantSpeaking(false)
+            openAIRecorder.resumeRecording()
           }
         } else {
-          recorder.resumeRecording()
+          openAIRecorder.resumeRecording()
         }
         setConnectionError(
           'DeepInfra TTS failed. Playing fallback speech while the issue persists.',
@@ -255,9 +280,9 @@ const useVoiceAssistant = () => {
         return next
       })
       // Resume recording on error so user can try again
-      recorder.resumeRecording()
+      openAIRecorder.resumeRecording()
     } finally {
-      setIsStreaming(false)
+      setIsOpenAIStreaming(false)
       controllerRef.current = null
       setMessages((prev) => {
         const next = prev.map((message) =>
@@ -267,22 +292,43 @@ const useVoiceAssistant = () => {
         return next
       })
     }
-  }, [recorder, isStreaming])
+  }, [openAIRecorder, isOpenAIStreaming])
 
   // Update the ref whenever sendTranscript changes
   useEffect(() => {
     sendTranscriptRef.current = sendTranscript
   }, [sendTranscript])
 
+  // --- Unified Interface ---
+
+  // If ElevenLabs is active, we map its state to the recorder interface
+  // so the UI can stay mostly the same.
+  const activeRecorder = provider === 'elevenlabs' ? {
+    state: {
+      isRecording: elevenLabs.isRecording,
+      isPaused: false, // ElevenLabs handles this differently, but for UI we can say not paused
+      audioBlob: null,
+      audioUrl: null,
+      transcript: '', // ElevenLabs doesn't expose partial transcript easily in the same way, or we can map it
+      error: null,
+    },
+    startRecording: elevenLabs.start,
+    stopRecording: elevenLabs.stop,
+    pauseRecording: () => { }, // Not implemented for ElevenLabs in this demo
+    resumeRecording: () => { }, // Not implemented
+    clearRecording: () => { },
+    resetTranscript: () => { },
+  } : openAIRecorder
+
   return {
-    recorder,
-    messages,
-    isStreaming,
+    recorder: activeRecorder,
+    messages: provider === 'elevenlabs' ? elevenLabs.messages : messages,
+    isStreaming: provider === 'elevenlabs' ? elevenLabs.isSpeaking : isOpenAIStreaming,
     connectionError,
     resetConversation,
-    sendTranscript,
+    sendTranscript: provider === 'elevenlabs' ? async () => { } : sendTranscript,
     replayAssistantAudio: playAssistantAudio,
-    isAssistantSpeaking,
+    isAssistantSpeaking: provider === 'elevenlabs' ? elevenLabs.isSpeaking : isOpenAIAssistantSpeaking,
   }
 }
 
