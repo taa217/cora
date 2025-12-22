@@ -1,15 +1,14 @@
-import { useEffect, useMemo, useState } from 'react'
-import RecordingButton from './RecordingButton'
+import { useEffect, useState } from 'react'
 import ErrorMessage from './ErrorMessage'
 import useVoiceAssistant, { VoiceProvider } from '../../hooks/useVoiceAssistant'
 import CoraWave, { CoraWaveState } from '../CoraWave'
 import CoraLogo from '../CoraLogo'
+import ConversationTimer from './ConversationTimer'
 
 const VoiceRecorder = () => {
-  const [provider, setProvider] = useState<VoiceProvider>('elevenlabs')
+  const [provider] = useState<VoiceProvider>('elevenlabs') // Keep state but remove UI
   const {
     recorder,
-    messages,
     isStreaming,
     connectionError,
     resetConversation,
@@ -20,11 +19,29 @@ const VoiceRecorder = () => {
     state,
     startRecording,
     stopRecording,
-    pauseRecording,
-    resumeRecording,
   } = recorder
 
-  const [showTranscript, setShowTranscript] = useState(false)
+  const [conversationStartTime, setConversationStartTime] = useState<number | null>(null)
+  const [isConnecting, setIsConnecting] = useState(false)
+
+  // Explicitly handle start to avoid race conditions with state.isRecording
+  const handleStart = async () => {
+    setIsConnecting(true)
+    try {
+      await startRecording()
+      setConversationStartTime(Date.now())
+    } catch (error) {
+      console.error('Failed to start conversation:', error)
+    } finally {
+      setIsConnecting(false)
+    }
+  }
+
+  const handleReset = () => {
+    stopRecording()
+    resetConversation()
+    setConversationStartTime(null)
+  }
 
   useEffect(() => {
     return () => {
@@ -34,12 +51,6 @@ const VoiceRecorder = () => {
     }
   }, [state.audioUrl])
 
-  const liveTranscript = state.transcript.trim()
-  const recentMessages = useMemo(
-    () => messages.slice(-4),
-    [messages],
-  )
-
   const waveState: CoraWaveState = state.isRecording
     ? 'listening'
     : isAssistantSpeaking
@@ -48,121 +59,87 @@ const VoiceRecorder = () => {
         ? 'thinking'
         : 'idle'
 
-  const statusCopy = state.isRecording
-    ? state.isPaused
-      ? 'Listening paused'
-      : 'Listening to your tone'
-    : isStreaming
-      ? 'Thinking through your request'
-      : isAssistantSpeaking
-        ? 'Cora is speaking back'
-        : 'Tap below and let Cora listen'
+  const statusCopy = isConnecting ? 'Connecting to Cora...' : ''
+
+  const hasStarted = conversationStartTime !== null
 
   return (
-    <section className="glass-effect relative overflow-hidden rounded-[36px] p-6 sm:p-10">
+    <section className="glass-effect relative overflow-hidden rounded-[36px] p-6 sm:p-10 min-h-[600px] flex flex-col w-full max-w-md md:max-w-3xl lg:max-w-4xl transition-all duration-500">
       <div className="absolute inset-0 opacity-30 blur-3xl pointer-events-none">
         <div className="h-1/2 w-1/2 bg-[radial-gradient(circle,_rgba(46,196,182,0.35)_0%,_transparent_70%)]" />
       </div>
-      <div className="relative space-y-8">
-        <div className="flex items-center justify-between gap-4">
+
+      {/* Header */}
+      <div className="relative flex items-center justify-between w-full h-16 z-10">
+        <div className="flex-shrink-0">
           <CoraLogo />
-          <div className="flex items-center gap-4">
-            <button
-              onClick={() => setProvider(p => p === 'openai' ? 'elevenlabs' : 'openai')}
-              className="text-xs uppercase tracking-[0.2em] text-brand-ivory/60 hover:text-brand-ivory transition border border-brand-ivory/20 rounded-full px-3 py-1"
-            >
-              {provider === 'elevenlabs' ? 'ElevenLabs' : 'OpenAI'}
-            </button>
-            <button
-              onClick={resetConversation}
-              className="text-xs uppercase tracking-[0.4em] text-brand-ivory/60 hover:text-brand-ivory transition"
-            >
-              Reset
-            </button>
-          </div>
         </div>
 
+        {/* Timer on the right side to avoid overlap */}
+        <div className="flex-shrink-0">
+          <ConversationTimer startTime={conversationStartTime} />
+        </div>
+      </div>
+
+      {/* Main Content */}
+      <div className="relative flex-1 flex flex-col items-center justify-center gap-8 py-12">
         {(state.error || connectionError) && (
           <ErrorMessage message={connectionError || state.error!} />
         )}
 
-        <div className="flex flex-col items-center gap-5">
+        <div className="flex flex-col items-center gap-6">
           <CoraWave state={waveState} size="lg" />
-          <p className="text-sm text-brand-ivory/70">{statusCopy}</p>
-          <RecordingButton
-            isRecording={state.isRecording}
-            isPaused={state.isPaused}
-            onStart={startRecording}
-            onStop={stopRecording}
-            onPause={pauseRecording}
-            onResume={resumeRecording}
-          />
-        </div>
-
-        {/* Transcript section - always reserves space */}
-        <div className="space-y-3 min-h-[120px]">
-          {/* Toggle button */}
-          {(recentMessages.length > 0 || liveTranscript) && (
-            <div className="flex justify-center">
-              <button
-                onClick={() => setShowTranscript(!showTranscript)}
-                className="text-xs uppercase tracking-[0.3em] text-brand-ivory/50 hover:text-brand-ivory/80 transition flex items-center gap-2"
-              >
-                <span>{showTranscript ? 'Hide' : 'Show'} conversation</span>
-                <svg
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  width="14"
-                  height="14"
-                  className={`transition-transform ${showTranscript ? 'rotate-180' : ''}`}
-                >
-                  <polyline points="6 9 12 15 18 9" />
-                </svg>
-              </button>
-            </div>
+          {statusCopy && (
+            <p className="text-sm text-brand-ivory/70 animate-pulse">{statusCopy}</p>
           )}
-
-          {/* Transcript content - fades in/out smoothly */}
-          <div
-            className={`transform transition-all duration-500 ease-out ${showTranscript
-              ? 'opacity-100 translate-y-0'
-              : 'opacity-0 -translate-y-2 pointer-events-none'
-              }`}
-          >
-            {recentMessages.map((message, index) => {
-              const depth = recentMessages.length || 1
-              const opacity = 0.45 + ((index + 1) / depth) * 0.55
-
-              return (
-                <p
-                  key={message.id}
-                  className="transcript-line text-lg"
-                  data-role={message.role}
-                  style={{ opacity }}
-                >
-                  {message.content || '...'}
-                  {message.role === 'assistant' && <span className="text-brand-coral"> —</span>}
-                </p>
-              )
-            })}
-            {liveTranscript && (
-              <p
-                className="transcript-line text-lg"
-                data-role="user"
-              >
-                {liveTranscript}
-                <span className="ml-2 text-sm uppercase tracking-[0.4em] text-brand-ivory/40">Live</span>
-              </p>
-            )}
-            {!recentMessages.length && !liveTranscript && (
-              <p className="text-brand-ivory/40 italic text-center">
-                Speak naturally—your words appear here.
-              </p>
-            )}
-          </div>
         </div>
+      </div>
+
+      {/* Footer */}
+      <div className="relative flex justify-center pt-4 border-t border-brand-ivory/10 h-20 items-center">
+        {!hasStarted && !isConnecting && (
+          <button
+            onClick={handleStart}
+            className="group flex items-center gap-2 px-6 py-3 text-xs uppercase tracking-[0.2em] text-brand-ivory/80 hover:text-brand-ivory transition-colors"
+          >
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              className="w-4 h-4 transition-transform group-hover:scale-110"
+            >
+              <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+              <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+              <line x1="12" y1="19" x2="12" y2="23" />
+              <line x1="8" y1="23" x2="16" y2="23" />
+            </svg>
+            Begin Conversation
+          </button>
+        )}
+
+        {hasStarted && (
+          <button
+            onClick={handleReset}
+            className="group flex items-center gap-2 px-6 py-3 text-xs uppercase tracking-[0.2em] text-brand-coral/80 hover:text-brand-coral transition-colors"
+          >
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              className="w-4 h-4 transition-transform group-hover:rotate-180"
+            >
+              <path d="M18.36 6.64a9 9 0 1 1-12.73 0" />
+              <line x1="12" y1="2" x2="12" y2="12" />
+            </svg>
+            End Conversation
+          </button>
+        )}
       </div>
     </section>
   )
