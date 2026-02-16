@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import useVoiceRecorder from './useVoiceRecorder'
 import { useElevenLabs } from './useElevenLabs'
+import { useCartesia } from './useCartesia'
 import { ChatCompletionMessageParam, ChatMessage } from '../types/voice'
 import { streamOpenAIResponse, synthesizeSpeechOpenAI } from '../lib/openai'
 import { speakText, stopSpeaking } from '../utils/speech'
 import { AudioQueue, extractCompleteSentences } from '../utils/audioQueue'
 
-export type VoiceProvider = 'openai' | 'elevenlabs'
+export type VoiceProvider = 'openai' | 'elevenlabs' | 'cartesia'
 
 const SYSTEM_PROMPT =
   "You are Cora, a friendly and concise real-time voice companion. Keep answers under three sentences, use a warm and proactive tone, and finish with a brief, helpful suggestion for next steps whenever it makes sense."
@@ -53,6 +54,16 @@ const useVoiceAssistant = (provider: VoiceProvider = 'elevenlabs') => {
 
   // --- ElevenLabs Implementation ---
   const elevenLabs = useElevenLabs({
+    onMessage: (message) => {
+      setMessages((prev) => [...prev, message])
+    },
+    onError: (error) => {
+      setConnectionError(error)
+    },
+  })
+
+  // --- Cartesia Implementation ---
+  const cartesia = useCartesia({
     onMessage: (message) => {
       setMessages((prev) => [...prev, message])
     },
@@ -121,10 +132,12 @@ const useVoiceAssistant = (provider: VoiceProvider = 'elevenlabs') => {
     if (provider === 'openai') {
       openAIRecorder.clearRecording()
       cleanupAssistantAudio()
-    } else {
+    } else if (provider === 'elevenlabs') {
       elevenLabs.stop()
+    } else if (provider === 'cartesia') {
+      cartesia.stop()
     }
-  }, [provider, openAIRecorder, cleanupAssistantAudio, elevenLabs])
+  }, [provider, openAIRecorder, cleanupAssistantAudio, elevenLabs, cartesia])
 
   const sendTranscript = useCallback(async () => {
     const transcript = openAIRecorder.state.transcript.trim()
@@ -301,34 +314,75 @@ const useVoiceAssistant = (provider: VoiceProvider = 'elevenlabs') => {
 
   // --- Unified Interface ---
 
-  // If ElevenLabs is active, we map its state to the recorder interface
-  // so the UI can stay mostly the same.
-  const activeRecorder = provider === 'elevenlabs' ? {
-    state: {
-      isRecording: elevenLabs.isRecording,
-      isPaused: false, // ElevenLabs handles this differently, but for UI we can say not paused
-      audioBlob: null,
-      audioUrl: null,
-      transcript: '', // ElevenLabs doesn't expose partial transcript easily in the same way, or we can map it
-      error: null,
-    },
-    startRecording: elevenLabs.start,
-    stopRecording: elevenLabs.stop,
-    pauseRecording: () => { }, // Not implemented for ElevenLabs in this demo
-    resumeRecording: () => { }, // Not implemented
-    clearRecording: () => { },
-    resetTranscript: () => { },
-  } : openAIRecorder
+  // Map provider state to the recorder interface so the UI can stay mostly the same.
+  const getActiveRecorder = () => {
+    if (provider === 'elevenlabs') {
+      return {
+        state: {
+          isRecording: elevenLabs.isRecording,
+          isPaused: false,
+          audioBlob: null,
+          audioUrl: null,
+          transcript: '',
+          error: null,
+        },
+        startRecording: elevenLabs.start,
+        stopRecording: elevenLabs.stop,
+        pauseRecording: () => { },
+        resumeRecording: () => { },
+        clearRecording: () => { },
+        resetTranscript: () => { },
+      }
+    } else if (provider === 'cartesia') {
+      return {
+        state: {
+          isRecording: cartesia.isRecording,
+          isPaused: false,
+          audioBlob: null,
+          audioUrl: null,
+          transcript: '',
+          error: null,
+        },
+        startRecording: cartesia.start,
+        stopRecording: cartesia.stop,
+        pauseRecording: () => { },
+        resumeRecording: () => { },
+        clearRecording: () => { },
+        resetTranscript: () => { },
+      }
+    }
+    return openAIRecorder
+  }
+
+  const activeRecorder = getActiveRecorder()
+
+  const getMessages = () => {
+    if (provider === 'elevenlabs') return elevenLabs.messages
+    if (provider === 'cartesia') return cartesia.messages
+    return messages
+  }
+
+  const getIsStreaming = () => {
+    if (provider === 'elevenlabs') return elevenLabs.isSpeaking
+    if (provider === 'cartesia') return cartesia.isSpeaking
+    return isOpenAIStreaming
+  }
+
+  const getIsAssistantSpeaking = () => {
+    if (provider === 'elevenlabs') return elevenLabs.isSpeaking
+    if (provider === 'cartesia') return cartesia.isSpeaking
+    return isOpenAIAssistantSpeaking
+  }
 
   return {
     recorder: activeRecorder,
-    messages: provider === 'elevenlabs' ? elevenLabs.messages : messages,
-    isStreaming: provider === 'elevenlabs' ? elevenLabs.isSpeaking : isOpenAIStreaming,
+    messages: getMessages(),
+    isStreaming: getIsStreaming(),
     connectionError,
     resetConversation,
-    sendTranscript: provider === 'elevenlabs' ? async () => { } : sendTranscript,
+    sendTranscript: provider === 'openai' ? sendTranscript : async () => { },
     replayAssistantAudio: playAssistantAudio,
-    isAssistantSpeaking: provider === 'elevenlabs' ? elevenLabs.isSpeaking : isOpenAIAssistantSpeaking,
+    isAssistantSpeaking: getIsAssistantSpeaking(),
   }
 }
 
