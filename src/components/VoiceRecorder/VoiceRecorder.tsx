@@ -2,13 +2,15 @@ import { useEffect, useState } from 'react'
 import { useAuth } from '@workos-inc/authkit-react'
 import ErrorMessage from './ErrorMessage'
 import useVoiceAssistant, { VoiceProvider } from '../../hooks/useVoiceAssistant'
+import { useTrialTimer } from '../../hooks/useTrialTimer'
 import CoraWave, { CoraWaveState } from '../CoraWave'
 import CoraLogo from '../CoraLogo'
 import ConversationTimer from './ConversationTimer'
+import AuthGateOverlay from '../AuthGateOverlay'
 
 const VoiceRecorder = () => {
   const [provider] = useState<VoiceProvider>('elevenlabs') // Keep state but remove UI
-  const { user, signOut } = useAuth()
+  const { user, signIn, signOut } = useAuth()
   const {
     recorder,
     isStreaming,
@@ -25,6 +27,19 @@ const VoiceRecorder = () => {
 
   const [conversationStartTime, setConversationStartTime] = useState<number | null>(null)
   const [isConnecting, setIsConnecting] = useState(false)
+
+  const hasStarted = conversationStartTime !== null
+
+  // Trial timer — only ticks for unauthenticated users while conversing
+  const { remainingSeconds, trialExpired } = useTrialTimer({
+    isConversing: hasStarted,
+    isAuthenticated: !!user,
+    onExpire: () => {
+      stopRecording()
+      resetConversation()
+      setConversationStartTime(null)
+    },
+  })
 
   // Explicitly handle start to avoid race conditions with state.isRecording
   const handleStart = async () => {
@@ -63,8 +78,6 @@ const VoiceRecorder = () => {
 
   const statusCopy = isConnecting ? 'Connecting to Cora...' : ''
 
-  const hasStarted = conversationStartTime !== null
-
   return (
     <section className="glass-effect relative overflow-hidden rounded-[36px] p-6 sm:p-10 min-h-[600px] flex flex-col w-full max-w-md md:max-w-3xl lg:max-w-4xl transition-all duration-500">
       <div className="absolute inset-0 opacity-30 blur-3xl pointer-events-none">
@@ -78,7 +91,8 @@ const VoiceRecorder = () => {
         </div>
 
         <div className="flex items-center gap-4 flex-shrink-0">
-          {user && (
+          {/* Auth section */}
+          {user ? (
             <div className="flex items-center gap-3">
               <span className="text-xs text-brand-ivory/50 hidden sm:inline">
                 {user.firstName ?? user.email}
@@ -90,7 +104,40 @@ const VoiceRecorder = () => {
                 Sign out
               </button>
             </div>
+          ) : (
+            <button
+              onClick={() => signIn()}
+              className="flex items-center gap-2 px-4 py-1.5 text-[11px] uppercase tracking-widest text-brand-teal/90 hover:text-brand-teal border border-brand-teal/20 hover:border-brand-teal/40 rounded-full transition-all duration-200 hover:bg-brand-teal/5"
+            >
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                className="w-3.5 h-3.5"
+              >
+                <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4" />
+                <polyline points="10 17 15 12 10 7" />
+                <line x1="15" y1="12" x2="3" y2="12" />
+              </svg>
+              Sign In
+            </button>
           )}
+
+          {/* Trial countdown for guests */}
+          {!user && hasStarted && !trialExpired && (
+            <div className="flex flex-col items-center">
+              <span className="text-[10px] font-medium uppercase tracking-[0.15em] text-brand-ivory/30">
+                Trial
+              </span>
+              <span className={`font-mono text-sm ${remainingSeconds <= 5 ? 'text-brand-coral animate-pulse' : 'text-brand-ivory/60'}`}>
+                {remainingSeconds}s
+              </span>
+            </div>
+          )}
+
           <ConversationTimer startTime={conversationStartTime} />
         </div>
       </div>
@@ -155,6 +202,9 @@ const VoiceRecorder = () => {
           </button>
         )}
       </div>
+
+      {/* Auth Gate Overlay */}
+      {trialExpired && !user && <AuthGateOverlay />}
     </section>
   )
 }
