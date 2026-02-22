@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useAuth } from '@workos-inc/authkit-react'
 import ErrorMessage from './ErrorMessage'
 import useVoiceAssistant, { VoiceProvider } from '../../hooks/useVoiceAssistant'
 import CoraWave, { CoraWaveState } from '../CoraWave'
@@ -7,6 +8,7 @@ import ConversationTimer from './ConversationTimer'
 
 const VoiceRecorder = () => {
   const [provider] = useState<VoiceProvider>('elevenlabs') // Keep state but remove UI
+  const { user, signOut } = useAuth()
   const {
     recorder,
     isStreaming,
@@ -75,8 +77,20 @@ const VoiceRecorder = () => {
           <CoraLogo />
         </div>
 
-        {/* Timer on the right side to avoid overlap */}
-        <div className="flex-shrink-0">
+        <div className="flex items-center gap-4 flex-shrink-0">
+          {user && (
+            <div className="flex items-center gap-3">
+              <span className="text-xs text-brand-ivory/50 hidden sm:inline">
+                {user.firstName ?? user.email}
+              </span>
+              <button
+                onClick={() => signOut()}
+                className="text-[11px] uppercase tracking-widest text-brand-ivory/40 hover:text-brand-coral/80 transition-colors"
+              >
+                Sign out
+              </button>
+            </div>
+          )}
           <ConversationTimer startTime={conversationStartTime} />
         </div>
       </div>
